@@ -22,5 +22,5 @@ func main() {
 	}
 	defer file.Close()
 
-	isal.CompressCopy(file, os.Stdout)
+	isal.DecompressCopy(file, os.Stdout)
 }
