@@ -16,7 +16,7 @@ import (
 
 type Writer struct {
 	w        io.Writer
-	state    C.struct_isal_zstream
+	state    *C.struct_isal_zstream
 	cInBuf   unsafe.Pointer
 	cOutBuf  unsafe.Pointer
 	goInBuf  []byte
@@ -64,8 +64,13 @@ func NewWriterLevel(w io.Writer, level int) (*Writer, error) {
 		outBufferCap: outBufferCap,
 	}
 
+	writer.state = (*C.struct_isal_zstream)(C.malloc(C.size_t(unsafe.Sizeof(C.struct_isal_zstream{}))))
+	if writer.state == nil {
+		return nil, errors.New("alloc failed for state")
+	}
+
 	// Initialize deflate state
-	C.isal_deflate_init(&writer.state)
+	C.isal_deflate_init(writer.state)
 	writer.state.gzip_flag = C.IGZIP_GZIP
 	writer.state.level = C.uint32_t(level)
 
@@ -83,7 +88,7 @@ func NewWriterLevel(w io.Writer, level int) (*Writer, error) {
 	if level > 0 {
 		writer.state.level_buf = (*C.uint8_t)(C.malloc(C.size_t(levelBufSize)))
 		if writer.state.level_buf == nil {
-			C.free(writer.cInBuf)
+			C.free(unsafe.Pointer(writer.state))
 			return nil, errors.New("alloc failed for level buffer")
 		}
 		writer.state.level_buf_size = C.uint32_t(levelBufSize)
@@ -92,12 +97,20 @@ func NewWriterLevel(w io.Writer, level int) (*Writer, error) {
 	// Allocate C buffers
 	writer.cInBuf = C.malloc(C.size_t(inBufferCap))
 	if writer.cInBuf == nil {
+		if writer.state.level_buf != nil {
+			C.free(unsafe.Pointer(writer.state.level_buf))
+		}
+		C.free(unsafe.Pointer(writer.state))
 		return nil, errors.New("alloc failed for input buffer")
 	}
 
 	writer.cOutBuf = C.malloc(C.size_t(outBufferCap))
 	if writer.cOutBuf == nil {
 		C.free(writer.cInBuf)
+		if writer.state.level_buf != nil {
+			C.free(unsafe.Pointer(writer.state.level_buf))
+		}
+		C.free(unsafe.Pointer(writer.state))
 		return nil, errors.New("alloc failed for output buffer")
 	}
 
@@ -161,7 +174,7 @@ func (w *Writer) compress(flush bool) error {
 		w.state.next_out = (*C.uint8_t)(w.cOutBuf)
 		w.state.avail_out = C.uint32_t(w.outBufferCap)
 
-		ret := C.isal_deflate(&w.state)
+		ret := C.isal_deflate(w.state)
 		if ret != C.ISAL_DECOMP_OK {
 			return fmt.Errorf("compression failed with code: %d", ret)
 		}
@@ -219,9 +232,13 @@ func (w *Writer) Close() error {
 	}
 
 	// Free C buffers including level_buf
-	if w.state.level_buf != nil {
-		C.free(unsafe.Pointer(w.state.level_buf))
-		w.state.level_buf = nil
+	if w.state != nil {
+		if w.state.level_buf != nil {
+			C.free(unsafe.Pointer(w.state.level_buf))
+			w.state.level_buf = nil
+		}
+		C.free(unsafe.Pointer(w.state))
+		w.state = nil
 	}
 	if w.cInBuf != nil {
 		C.free(w.cInBuf)
